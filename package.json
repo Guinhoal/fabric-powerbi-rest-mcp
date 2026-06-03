@@ -1,0 +1,15 @@
+{
+  "name": "fabric-powerbi-rest-mcp",
+  "version": "3.0.0",
+  "type": "module",
+  "description": "MCP server para Power BI REST API e Fabric REST API",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "start:http": "MCP_TRANSPORT=http node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "express": "^4.19.0"
+  }
+}
