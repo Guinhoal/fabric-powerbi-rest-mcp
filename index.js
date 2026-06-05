@@ -611,14 +611,27 @@ if (HTTP_MODE) {
   // NÃO usar express.json() global — ele consome o stream que o SSE precisa cru.
 
   const authMiddleware = (req, res, next) => {
-    const key = process.env.MCP_API_KEY;
-    if (!key) return next();
-    if (req.headers.authorization !== `Bearer ${key}`) {
-      log(`[AUTH] Rejeitado: ${req.ip} → ${req.path}`);
-      return res.status(401).json({ error: "Unauthorized" });
-    }
-    next();
-  };
+  const key = process.env.MCP_API_KEY || process.env.MCP_BEARER_TOKEN;
+
+  if (!key) {
+    log("[AUTH] MCP_API_KEY/MCP_BEARER_TOKEN não definido. Servidor aberto.");
+    return next();
+  }
+
+  const authorization = req.headers.authorization || "";
+
+  if (authorization !== `Bearer ${key}`) {
+    log(
+      `[AUTH] Rejeitado: ${req.ip} → ${req.path}. Header recebido: ${
+        authorization ? "presente" : "ausente"
+      }`
+    );
+
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  next();
+};
 
   const sessions = new Map();
 
