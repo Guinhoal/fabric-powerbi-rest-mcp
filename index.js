@@ -608,9 +608,8 @@ function createMcpServer() {
 if (HTTP_MODE) {
   // ── HTTP / SSE mode (Docker) ──────────────────────────────────────────────
   const app = express();
-  app.use(express.json());
+  // NÃO usar express.json() global — ele consome o stream que o SSE precisa cru.
 
-  // Bearer token middleware — sem MCP_API_KEY o servidor fica aberto (dev)
   const authMiddleware = (req, res, next) => {
     const key = process.env.MCP_API_KEY;
     if (!key) return next();
@@ -623,7 +622,6 @@ if (HTTP_MODE) {
 
   const sessions = new Map();
 
-  // Endpoint SSE: cliente abre conexão longa aqui
   app.get("/sse", authMiddleware, async (req, res) => {
     log(`[SSE] Nova sessão de ${req.ip}`);
     const transport = new SSEServerTransport("/message", res);
@@ -636,14 +634,14 @@ if (HTTP_MODE) {
     await mcpServer.connect(transport);
   });
 
-  // Endpoint POST: mensagens JSON-RPC do cliente
+  // POST sem express.json() — handlePostMessage lê o stream cru ele mesmo
   app.post("/message", authMiddleware, async (req, res) => {
     const session = sessions.get(req.query.sessionId);
     if (!session) return res.status(404).json({ error: "Session not found" });
     await session.transport.handlePostMessage(req, res);
   });
 
-  // Health check — útil para healthcheck do Docker
+  // health usa json manual, não precisa de body parser
   app.get("/health", (req, res) =>
     res.json({ ok: true, version: "3.0.0", sessions: sessions.size })
   );
