@@ -676,6 +676,23 @@ async function dispatchTool(toolName, args) {
     case "get_workspace_inventory": {
       return successResponse({ ok: true, ...(await getWorkspaceInventory(args.workspace)) });
     }
+    case "execute_sql_query": {
+      const maxRows = Math.min(args.max_rows ?? 100, 1000);
+      const result = await executeSqlQuery(
+        args.sql_endpoint,
+        args.database,
+        args.query,
+        maxRows
+      );
+      return successResponse({
+        ok: true,
+        sql_endpoint: args.sql_endpoint,
+        database: args.database,
+        rowCount: result.rowCount,
+        columns: result.columns,
+        rows: result.rows
+      });
+    }
     default:
       return errorResponse(toolName, new Error(`Ferramenta desconhecida: ${toolName}`));
   }
