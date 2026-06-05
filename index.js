@@ -1,9 +1,11 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import {
   CallToolRequestSchema,
-  ListToolsRequestSchema
+  ListToolsRequestSchema,
+  isInitializeRequest
 } from "@modelcontextprotocol/sdk/types.js";
 import { execSync } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
