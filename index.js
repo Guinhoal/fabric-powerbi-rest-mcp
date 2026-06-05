@@ -662,7 +662,13 @@ if (HTTP_MODE) {
   app.listen(PORT, "0.0.0.0", () => {
     log(`[HTTP] MCP server escutando na porta ${PORT}`);
     log(`[HTTP] SSE endpoint: http://0.0.0.0:${PORT}/sse`);
-    log(`[HTTP] Auth: ${process.env.MCP_API_KEY ? "Bearer token ativo" : "aberto (dev)"}`);
+    log(
+  `[HTTP] Auth: ${
+    process.env.MCP_API_KEY || process.env.MCP_BEARER_TOKEN
+      ? "Bearer token ativo"
+      : "aberto (dev)"
+  }`
+);
   });
 } else {
   // ── Stdio mode (Claude Desktop local) ────────────────────────────────────
