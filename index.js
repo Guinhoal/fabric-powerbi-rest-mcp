@@ -613,25 +613,33 @@ if (HTTP_MODE) {
   const app = express();
   // NÃO usar express.json() global — ele consome o stream que o SSE precisa cru.
 
-  const authMiddleware = (req, res, next) => {
-  const key = process.env.MCP_API_KEY || process.env.MCP_BEARER_TOKEN;
+    const authMiddleware = (req, res, next) => {
+    const key = process.env.MCP_API_KEY || process.env.MCP_BEARER_TOKEN;
 
-  if (!key) {
-    log("[AUTH] MCP_API_KEY/MCP_BEARER_TOKEN não definido. Servidor aberto.");
-    return next();
-  }
+    if (!key) {
+      log("[AUTH] MCP_API_KEY/MCP_BEARER_TOKEN não definido. Servidor aberto.");
+      return next();
+    }
 
-  const authorization = req.headers.authorization || "";
+    const authorization = req.headers.authorization || "";
+    const apiKey = req.headers["x-api-key"] || "";
 
-  if (authorization !== `Bearer ${key}`) {
-    log(
-      `[AUTH] Rejeitado: ${req.ip} → ${req.path}. Header recebido: ${
-        authorization ? "presente" : "ausente"
-      }`
-    );
+    const valid =
+      authorization === `Bearer ${key}` ||
+      apiKey === key;
 
-    return res.status(401).json({ error: "Unauthorized" });
-  }
+    if (!valid) {
+      log(
+        `[AUTH] Rejeitado: ${req.ip} → ${req.path}. Header Authorization: ${
+          authorization ? "presente" : "ausente"
+        }, x-api-key: ${apiKey ? "presente" : "ausente"}`
+      );
+
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    next();
+  };
 
   next();
 };
