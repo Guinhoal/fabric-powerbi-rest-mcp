@@ -415,6 +415,32 @@ async function executeSqlQuery(sqlEndpoint, database, query, maxRows = 100) {
   });
 }
 
+// --------------------------------------------------------------------------
+// Listar endpoints sql
+// --------------------------------------------------------------------------
+
+async function listLakehouseSqlEndpoints(workspaceNameOrId) {
+  const workspaceId = await resolveWorkspaceId(workspaceNameOrId);
+  const token = await getAzureToken(FABRIC_RESOURCE);
+  const data = await getJson(
+    `${FABRIC_BASE}/workspaces/${workspaceId}/lakehouses`,
+    token
+  );
+  const items = Array.isArray(data.value) ? data.value : [];
+  return {
+    workspaceId,
+    total: items.length,
+    lakehouses: items.map(lh => ({
+      id: lh.id,
+      displayName: lh.displayName,
+      sql_endpoint: lh.properties?.sqlEndpointProperties?.connectionString ?? null,
+      database: lh.displayName,
+      provisioningStatus: lh.properties?.sqlEndpointProperties?.provisioningStatus ?? null
+    }))
+  };
+}
+
+
 // ---------------------------------------------------------------------------
 // Tool definitions (shared between stdio and HTTP modes)
 // ---------------------------------------------------------------------------
@@ -589,6 +615,20 @@ const TOOL_DEFINITIONS = [
       },
       required: ["sql_endpoint", "database", "query"]
     }
+  } ,
+  {
+    name: "list_lakehouse_sql_endpoints",
+    description: "Lista todos os Lakehouses de um workspace do Fabric e retorna o SQL Endpoint de cada um. Use antes de execute_sql_query para descobrir o endpoint correto automaticamente.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: {
+          type: "string",
+          description: "Nome OU id (GUID) do workspace do Fabric."
+        }
+      },
+      required: ["workspace"]
+    }
   }
 ];
 
@@ -692,6 +732,10 @@ async function dispatchTool(toolName, args) {
         columns: result.columns,
         rows: result.rows
       });
+    }
+    case "list_lakehouse_sql_endpoints": {
+      const result = await listLakehouseSqlEndpoints(args.workspace);
+      return successResponse({ ok: true, ...result });
     }
     default:
       return errorResponse(toolName, new Error(`Ferramenta desconhecida: ${toolName}`));
