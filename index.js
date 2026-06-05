@@ -11,6 +11,7 @@ import { execSync } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import express from "express";
+import crypto from "node:crypto";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -660,6 +661,85 @@ if (HTTP_MODE) {
   app.get("/health", (req, res) =>
     res.json({ ok: true, version: "3.0.0", sessions: sessions.size })
   );
+
+    // ── Streamable HTTP mode para Copilot Studio ─────────────────────────────
+  const streamableSessions = new Map();
+
+  const jsonParser = express.json({ limit: "10mb" });
+
+  app.post("/mcp", authMiddleware, jsonParser, async (req, res) => {
+    try {
+      const sessionId = req.headers["mcp-session-id"];
+      let transport;
+
+      if (sessionId && streamableSessions.has(sessionId)) {
+        transport = streamableSessions.get(sessionId);
+      } else if (!sessionId && isInitializeRequest(req.body)) {
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => crypto.randomUUID(),
+          onsessioninitialized: (newSessionId) => {
+            streamableSessions.set(newSessionId, transport);
+            log(`[MCP] Streamable session initialized: ${newSessionId}`);
+          }
+        });
+
+        transport.onclose = () => {
+          if (transport.sessionId) {
+            streamableSessions.delete(transport.sessionId);
+            log(`[MCP] Streamable session closed: ${transport.sessionId}`);
+          }
+        };
+
+        const mcpServer = createMcpServer();
+        await mcpServer.connect(transport);
+      } else {
+        return res.status(400).json({
+          jsonrpc: "2.0",
+          error: {
+            code: -32000,
+            message: "Bad Request: invalid or missing MCP session."
+          },
+          id: null
+        });
+      }
+
+      await transport.handleRequest(req, res, req.body);
+    } catch (error) {
+      log(`[MCP] POST /mcp error: ${error.stack || error.message}`);
+
+      if (!res.headersSent) {
+        res.status(500).json({
+          error: error.message
+        });
+      }
+    }
+  });
+
+  async function handleStreamableSessionRequest(req, res) {
+    try {
+      const sessionId = req.headers["mcp-session-id"];
+
+      if (!sessionId || !streamableSessions.has(sessionId)) {
+        return res.status(400).json({
+          error: "Invalid or missing MCP session ID"
+        });
+      }
+
+      const transport = streamableSessions.get(sessionId);
+      await transport.handleRequest(req, res);
+    } catch (error) {
+      log(`[MCP] Session request error: ${error.stack || error.message}`);
+
+      if (!res.headersSent) {
+        res.status(500).json({
+          error: error.message
+        });
+      }
+    }
+  }
+
+  app.get("/mcp", authMiddleware, handleStreamableSessionRequest);
+  app.delete("/mcp", authMiddleware, handleStreamableSessionRequest);
 
   app.listen(PORT, "0.0.0.0", () => {
     log(`[HTTP] MCP server escutando na porta ${PORT}`);
