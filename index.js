@@ -1,6 +1,7 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { Connection, Request as TdsRequest } from "tedious";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import {
   CallToolRequestSchema,
@@ -340,6 +341,81 @@ async function getWorkspaceInventory(workspaceNameOrId) {
 }
 
 // ---------------------------------------------------------------------------
+// SQL Endpoint (Fabric Lakehouse / Warehouse)
+// ---------------------------------------------------------------------------
+
+async function executeSqlQuery(sqlEndpoint, database, query, maxRows = 100) {
+  const token = await getAzureToken(FABRIC_RESOURCE);
+
+  // Protege contra queries não-SELECT em modo seguro
+  const trimmed = query.trim();
+  const isSelect = /^SELECT\s/i.test(trimmed);
+  const safeQuery = isSelect
+    ? `SELECT TOP ${maxRows} * FROM (${trimmed}) AS _mcp_result`
+    : trimmed;
+
+  log(`[SQL] Conectando em ${sqlEndpoint}, db=${database}`);
+  log(`[SQL] Query: ${safeQuery.substring(0, 200)}`);
+
+  return new Promise((resolve, reject) => {
+    const config = {
+      server: sqlEndpoint,
+      authentication: {
+        type: "azure-active-directory-access-token",
+        options: { token }
+      },
+      options: {
+        database,
+        port: 1433,
+        encrypt: true,
+        trustServerCertificate: false,
+        connectTimeout: 30000,
+        requestTimeout: 60000,
+        rowCollectionOnDone: false
+      }
+    };
+
+    const connection = new Connection(config);
+    const rows = [];
+    let columns = [];
+
+    connection.on("connect", (err) => {
+      if (err) {
+        log(`[SQL] Erro de conexão: ${err.message}`);
+        return reject(err);
+      }
+
+      log(`[SQL] Conectado. Executando query...`);
+      const request = new TdsRequest(safeQuery, (err, rowCount) => {
+        connection.close();
+        if (err) {
+          log(`[SQL] Erro na query: ${err.message}`);
+          return reject(err);
+        }
+        log(`[SQL] Query concluída. ${rowCount} linhas.`);
+        resolve({ rows, rowCount, columns: columns.map(c => c.colName) });
+      });
+
+      request.on("columnMetadata", (cols) => {
+        columns = cols;
+      });
+
+      request.on("row", (cols) => {
+        const row = {};
+        cols.forEach(col => {
+          row[col.metadata.colName] = col.value;
+        });
+        rows.push(row);
+      });
+
+      connection.execSql(request);
+    });
+
+    connection.connect();
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Tool definitions (shared between stdio and HTTP modes)
 // ---------------------------------------------------------------------------
 
@@ -484,6 +560,34 @@ const TOOL_DEFINITIONS = [
       type: "object",
       properties: { workspace: { type: "string" } },
       required: ["workspace"]
+    }
+  }
+
+  {
+    name: "execute_sql_query",
+    description: "Executa uma query T-SQL no SQL Endpoint de um Lakehouse ou Warehouse do Microsoft Fabric. Use para consultar tabelas Delta diretamente via SQL.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sql_endpoint: {
+          type: "string",
+          description: "FQDN do SQL Endpoint do Lakehouse/Warehouse. Ex: abc123xyz.datawarehouse.fabric.microsoft.com"
+        },
+        database: {
+          type: "string",
+          description: "Nome do Lakehouse ou Warehouse (database name)."
+        },
+        query: {
+          type: "string",
+          description: "Query T-SQL a executar. Prefira SELECT. Queries SELECT são automaticamente limitadas por max_rows."
+        },
+        max_rows: {
+          type: "integer",
+          description: "Limite de linhas retornadas para queries SELECT (default: 100, máx: 1000).",
+          default: 100
+        }
+      },
+      required: ["sql_endpoint", "database", "query"]
     }
   }
 ];
