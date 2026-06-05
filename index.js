@@ -561,7 +561,7 @@ const TOOL_DEFINITIONS = [
       properties: { workspace: { type: "string" } },
       required: ["workspace"]
     }
-  }
+  },
 
   {
     name: "execute_sql_query",
