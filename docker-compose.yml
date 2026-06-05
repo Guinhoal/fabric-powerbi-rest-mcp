@@ -21,5 +21,13 @@ services:
       timeout: 5s
       retries: 3
 
+  cloudflared-mcp:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared-mcp
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://fabric-powerbi-mcp:8000
+    depends_on:
+      - fabric-powerbi-mcp
+
 volumes:
   fabric-mcp-logs:
