@@ -637,10 +637,6 @@ if (HTTP_MODE) {
 
       return res.status(401).json({ error: "Unauthorized" });
     }
-
-    next();
-  };
-
   next();
 };
 
