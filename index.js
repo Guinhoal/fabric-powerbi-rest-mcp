@@ -29,6 +29,7 @@ const PORT = parseInt(process.env.PORT ?? "8000", 10);
 
 const POWERBI_RESOURCE = "https://analysis.windows.net/powerbi/api";
 const FABRIC_RESOURCE = "https://api.fabric.microsoft.com";
+const SQL_RESOURCE = "https://database.windows.net";
 const PBI_BASE = "https://api.powerbi.com/v1.0/myorg";
 const FABRIC_BASE = "https://api.fabric.microsoft.com/v1";
 
@@ -345,10 +346,10 @@ async function getWorkspaceInventory(workspaceNameOrId) {
 // ---------------------------------------------------------------------------
 
 async function executeSqlQuery(sqlEndpoint, database, query, maxRows = 100) {
-  const token = await getAzureToken(FABRIC_RESOURCE);
+  const token = await getAzureToken(SQL_RESOURCE);
 
   // Protege contra queries não-SELECT em modo seguro
-  const trimmed = query.trim();
+  const trimmed = query.trim().replace(/;+\s*$/, "");
   const isSelect = /^SELECT\s/i.test(trimmed);
   const safeQuery = isSelect
     ? `SELECT TOP ${maxRows} * FROM (${trimmed}) AS _mcp_result`
@@ -378,6 +379,20 @@ async function executeSqlQuery(sqlEndpoint, database, query, maxRows = 100) {
     const connection = new Connection(config);
     const rows = [];
     let columns = [];
+    let settled = false;
+
+function fail(err) {
+  if (settled) return;
+  settled = true;
+  try { connection.close(); } catch {}
+  log(`[SQL] Erro fatal: ${err.message}`);
+  reject(err);
+}
+
+connection.on("error", fail);
+connection.on("errorMessage", (msg) => {
+  log(`[SQL] Server message: ${msg.message}`);
+});
 
     connection.on("connect", (err) => {
       if (err) {
@@ -387,14 +402,19 @@ async function executeSqlQuery(sqlEndpoint, database, query, maxRows = 100) {
 
       log(`[SQL] Conectado. Executando query...`);
       const request = new TdsRequest(safeQuery, (err, rowCount) => {
-        connection.close();
-        if (err) {
-          log(`[SQL] Erro na query: ${err.message}`);
-          return reject(err);
-        }
-        log(`[SQL] Query concluída. ${rowCount} linhas.`);
-        resolve({ rows, rowCount, columns: columns.map(c => c.colName) });
-      });
+  try { connection.close(); } catch {}
+
+  if (settled) return;
+  settled = true;
+
+  if (err) {
+    log(`[SQL] Erro na query: ${err.message}`);
+    return reject(err);
+  }
+
+  log(`[SQL] Query concluida. ${rowCount} linhas.`);
+  resolve({ rows, rowCount, columns: columns.map(c => c.colName) });
+});
 
       request.on("columnMetadata", (cols) => {
         columns = cols;
