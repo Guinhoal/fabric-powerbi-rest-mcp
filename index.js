@@ -1,8 +1,8 @@
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { Connection, Request as TdsRequest } from "tedious";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
+import { Connection, Request as TdsRequest } from "tedious";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -11,6 +11,7 @@ import {
 import { execSync } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import net from "node:net";
 import express from "express";
 import crypto from "node:crypto";
 
@@ -29,7 +30,6 @@ const PORT = parseInt(process.env.PORT ?? "8000", 10);
 
 const POWERBI_RESOURCE = "https://analysis.windows.net/powerbi/api";
 const FABRIC_RESOURCE = "https://api.fabric.microsoft.com";
-const SQL_RESOURCE = "https://database.windows.net/";
 const PBI_BASE = "https://api.powerbi.com/v1.0/myorg";
 const FABRIC_BASE = "https://api.fabric.microsoft.com/v1";
 
@@ -42,7 +42,7 @@ function log(message) {
     mkdirSync(dirname(LOG_FILE), { recursive: true });
     appendFileSync(LOG_FILE, `[${new Date().toISOString()}] ${message}\n`, "utf8");
   } catch {
-    // stdout reservado para JSON-RPC em modo stdio
+    // Keep stdout reserved for JSON-RPC in stdio mode.
   }
 }
 
@@ -62,7 +62,7 @@ function successResponse(payload) {
 }
 
 // ---------------------------------------------------------------------------
-// Auth: Service Principal (Docker) ou az CLI (local dev)
+// Auth: Service Principal (Docker) or az CLI (local dev)
 // ---------------------------------------------------------------------------
 
 const tokenCache = new Map();
@@ -74,13 +74,10 @@ async function getAzureToken(resource) {
   log(`Obtaining token for resource: ${resource}`);
 
   if (process.env.AZURE_CLIENT_ID) {
-    // Modo headless/Docker: client credentials flow direto no Entra ID
     const { AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET } = process.env;
 
     if (!AZURE_TENANT_ID || !AZURE_CLIENT_ID || !AZURE_CLIENT_SECRET) {
-      throw new Error(
-        "Defina AZURE_TENANT_ID, AZURE_CLIENT_ID e AZURE_CLIENT_SECRET."
-      );
+      throw new Error("Defina AZURE_TENANT_ID, AZURE_CLIENT_ID e AZURE_CLIENT_SECRET.");
     }
 
     const params = new URLSearchParams({
@@ -102,9 +99,7 @@ async function getAzureToken(resource) {
     const data = await res.json();
 
     if (!res.ok) {
-      throw new Error(
-        `Entra ID error: ${data.error_description ?? JSON.stringify(data)}`
-      );
+      throw new Error(`Entra ID error: ${data.error_description ?? JSON.stringify(data)}`);
     }
 
     const token = data.access_token;
@@ -112,18 +107,17 @@ async function getAzureToken(resource) {
     tokenCache.set(resource, { token, expiresAt });
     log(`Token OK (SP). Expires in ~${data.expires_in}s`);
     return token;
-  } else {
-    // Modo local: az CLI (requer az login)
-    const token = execSync(
-      `az account get-access-token --resource "${resource}" --query accessToken -o tsv`,
-      { encoding: "utf8", windowsHide: true, shell: true, env: { ...process.env } }
-    ).trim();
-
-    if (!token) throw new Error("Token vazio retornado pelo Azure CLI.");
-    tokenCache.set(resource, { token, expiresAt: Date.now() + 50 * 60 * 1000 });
-    log(`Token OK (az CLI). Length: ${token.length}`);
-    return token;
   }
+
+  const token = execSync(
+    `az account get-access-token --resource "${resource}" --query accessToken -o tsv`,
+    { encoding: "utf8", windowsHide: true, shell: true, env: { ...process.env } }
+  ).trim();
+
+  if (!token) throw new Error("Token vazio retornado pelo Azure CLI.");
+  tokenCache.set(resource, { token, expiresAt: Date.now() + 50 * 60 * 1000 });
+  log(`Token OK (az CLI). Length: ${token.length}`);
+  return token;
 }
 
 // ---------------------------------------------------------------------------
@@ -157,11 +151,13 @@ async function listFabricWorkspaces() {
   const token = await getAzureToken(FABRIC_RESOURCE);
   let url = `${FABRIC_BASE}/workspaces`;
   const all = [];
+
   while (url) {
     const data = await getJson(url, token);
     if (Array.isArray(data.value)) all.push(...data.value);
     url = data.continuationUri || null;
   }
+
   return all.map((w) => ({
     id: w.id,
     displayName: w.displayName,
@@ -175,16 +171,15 @@ async function listPowerBiWorkspaces() {
   const token = await getAzureToken(POWERBI_RESOURCE);
   const all = [];
   let skip = 0;
+
   while (true) {
-    const data = await getJson(
-      `${PBI_BASE}/groups?$top=5000&$skip=${skip}`,
-      token
-    );
+    const data = await getJson(`${PBI_BASE}/groups?$top=5000&$skip=${skip}`, token);
     const batch = Array.isArray(data.value) ? data.value : [];
     all.push(...batch);
     if (batch.length < 5000) break;
     skip += 5000;
   }
+
   return all.map((w) => ({
     id: w.id,
     name: w.name,
@@ -207,12 +202,14 @@ async function resolveWorkspaceId(nameOrId) {
 
   const partial = workspaces.filter((w) => (w.name ?? "").toLowerCase().includes(target));
   if (partial.length === 1) return partial[0].id;
-  if (partial.length > 1)
+  if (partial.length > 1) {
     throw new Error(
       `"${nameOrId}" casou com ${partial.length} workspaces: ` +
         partial.map((w) => `"${w.name}" (${w.id})`).join(", ")
     );
-  throw new Error(`Workspace não encontrado: "${nameOrId}"`);
+  }
+
+  throw new Error(`Workspace nao encontrado: "${nameOrId}"`);
 }
 
 // ---------------------------------------------------------------------------
@@ -265,12 +262,14 @@ async function resolveDatasetId(groupId, nameOrId) {
 
   const partial = datasets.filter((d) => (d.name ?? "").toLowerCase().includes(target));
   if (partial.length === 1) return partial[0].id;
-  if (partial.length > 1)
+  if (partial.length > 1) {
     throw new Error(
       `"${nameOrId}" casou com ${partial.length} datasets: ` +
         partial.map((d) => `"${d.name}" (${d.id})`).join(", ")
     );
-  throw new Error(`Dataset não encontrado: "${nameOrId}" no workspace ${groupId}`);
+  }
+
+  throw new Error(`Dataset nao encontrado: "${nameOrId}" no workspace ${groupId}`);
 }
 
 async function findDatasetLastRefresh(workspaceNameOrId, datasetNameOrId) {
@@ -278,9 +277,15 @@ async function findDatasetLastRefresh(workspaceNameOrId, datasetNameOrId) {
   const datasetId = await resolveDatasetId(groupId, datasetNameOrId);
   const history = await getRefreshHistory(groupId, datasetId, 5);
   let meta = null;
-  try { meta = await getDataset(groupId, datasetId); } catch {}
+  try {
+    meta = await getDataset(groupId, datasetId);
+  } catch {
+    // Keep refresh output even when metadata is unavailable.
+  }
+
   return {
-    groupId, datasetId,
+    groupId,
+    datasetId,
     datasetName: meta?.name ?? null,
     isRefreshable: meta?.isRefreshable ?? null,
     lastRefresh: history[0] ?? null,
@@ -295,7 +300,8 @@ async function findDatasetLastRefresh(workspaceNameOrId, datasetNameOrId) {
 async function listReports(groupId) {
   const rows = await pbiGetValue(`/groups/${groupId}/reports`);
   return rows.map((r) => ({
-    id: r.id, name: r.name,
+    id: r.id,
+    name: r.name,
     reportType: r.reportType ?? null,
     datasetId: r.datasetId ?? null,
     webUrl: r.webUrl ?? null,
@@ -331,13 +337,20 @@ async function getDataflowDatasources(groupId, dataflowId) {
 async function getWorkspaceInventory(workspaceNameOrId) {
   const groupId = await resolveWorkspaceId(workspaceNameOrId);
   const settle = async (fn) => {
-    try { return { ok: true, items: await fn(groupId) }; }
-    catch (e) { return { ok: false, error: e.message }; }
+    try {
+      return { ok: true, items: await fn(groupId) };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
   };
+
   const [datasets, reports, dashboards, dataflows] = await Promise.all([
-    settle(listDatasets), settle(listReports),
-    settle(listDashboards), settle(listDataflows)
+    settle(listDatasets),
+    settle(listReports),
+    settle(listDashboards),
+    settle(listDataflows)
   ]);
+
   return { groupId, datasets, reports, dashboards, dataflows };
 }
 
@@ -345,26 +358,56 @@ async function getWorkspaceInventory(workspaceNameOrId) {
 // SQL Endpoint (Fabric Lakehouse / Warehouse)
 // ---------------------------------------------------------------------------
 
-async function executeSqlQuery(sqlEndpoint, database, query, maxRows = 100) {
-  const token = await getAzureToken(SQL_RESOURCE);
+function normalizeSqlEndpoint(sqlEndpoint) {
+  return String(sqlEndpoint)
+    .trim()
+    .replace(/^tcp:/i, "")
+    .replace(/,1433$/i, "");
+}
 
-  // Protege contra queries não-SELECT em modo seguro
-  const trimmed = query.trim().replace(/;+\s*$/, "");
+function buildSafeQuery(query, maxRows) {
+  const trimmed = String(query).trim().replace(/;+\s*$/, "");
+  if (!trimmed) throw new Error("Query vazia.");
+
+  const boundedMaxRows = Math.max(1, Math.min(Number(maxRows) || 100, 1000));
   const isSelect = /^SELECT\s/i.test(trimmed);
-  const safeQuery = isSelect
-    ? `SELECT TOP ${maxRows} * FROM (${trimmed}) AS _mcp_result`
-    : trimmed;
 
-  log(`[SQL] Conectando em ${sqlEndpoint}, db=${database}`);
-  log(`[SQL] Query: ${safeQuery.substring(0, 200)}`);
+  return {
+    isSelect,
+    maxRows: boundedMaxRows,
+    query: isSelect ? `SELECT TOP ${boundedMaxRows} * FROM (${trimmed}) AS _mcp_result` : trimmed
+  };
+}
+
+function getServicePrincipalSqlAuth() {
+  const { AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET } = process.env;
+
+  if (!AZURE_TENANT_ID || !AZURE_CLIENT_ID || !AZURE_CLIENT_SECRET) {
+    throw new Error("Defina AZURE_TENANT_ID, AZURE_CLIENT_ID e AZURE_CLIENT_SECRET.");
+  }
+
+  return {
+    type: "azure-active-directory-service-principal-secret",
+    options: {
+      tenantId: AZURE_TENANT_ID,
+      clientId: AZURE_CLIENT_ID,
+      clientSecret: AZURE_CLIENT_SECRET
+    }
+  };
+}
+
+async function executeSqlQuery(sqlEndpoint, database, query, maxRows = 100) {
+  const server = normalizeSqlEndpoint(sqlEndpoint);
+  const safe = buildSafeQuery(query, maxRows);
+
+  log(`[SQL] Conectando em ${server}, db=${database}`);
+  log("[SQL] Auth type: azure-active-directory-service-principal-secret");
+  log(`[SQL] Query: ${safe.query.substring(0, 500)}`);
 
   return new Promise((resolve, reject) => {
     const config = {
-      server: sqlEndpoint,
-      authentication: {
-        type: "azure-active-directory-access-token",
-        options: { token }
-      },
+      server,
+      authentication: getServicePrincipalSqlAuth(),
       options: {
         database,
         port: 1433,
@@ -381,40 +424,58 @@ async function executeSqlQuery(sqlEndpoint, database, query, maxRows = 100) {
     let columns = [];
     let settled = false;
 
-function fail(err) {
-  if (settled) return;
-  settled = true;
-  try { connection.close(); } catch {}
-  log(`[SQL] Erro fatal: ${err.message}`);
-  reject(err);
-}
+    function finishOk(payload) {
+      if (settled) return;
+      settled = true;
+      try {
+        connection.close();
+      } catch {
+        // Ignore close errors.
+      }
+      resolve(payload);
+    }
 
-connection.on("error", fail);
-connection.on("errorMessage", (msg) => {
-  log(`[SQL] Server message: ${msg.message}`);
-});
+    function finishError(err, phase = "fatal") {
+      if (settled) return;
+      settled = true;
+      try {
+        connection.close();
+      } catch {
+        // Ignore close errors.
+      }
+      log(`[SQL] Erro ${phase}: ${err?.message ?? String(err)}`);
+      reject(err);
+    }
+
+    connection.on("debug", (message) => {
+      if (process.env.MCP_SQL_DEBUG === "1") log(`[SQL DEBUG] ${message}`);
+    });
+
+    connection.on("error", (err) => finishError(err, "fatal"));
+
+    connection.on("errorMessage", (msg) => {
+      log(`[SQL] Server error ${msg.number ?? ""}: ${msg.message}`);
+    });
+
+    connection.on("infoMessage", (msg) => {
+      log(`[SQL] Server info ${msg.number ?? ""}: ${msg.message}`);
+    });
 
     connection.on("connect", (err) => {
-      if (err) {
-  log(`[SQL] Erro de conexão: ${err.message}`);
-  return fail(err);
-}
+      if (err) return finishError(err, "de conexao");
 
-      log(`[SQL] Conectado. Executando query...`);
-      const request = new TdsRequest(safeQuery, (err, rowCount) => {
-  try { connection.close(); } catch {}
+      log("[SQL] Conectado. Executando query...");
 
-  if (settled) return;
-  settled = true;
+      const request = new TdsRequest(safe.query, (requestErr, rowCount) => {
+        if (requestErr) return finishError(requestErr, "na query");
 
-  if (err) {
-    log(`[SQL] Erro na query: ${err.message}`);
-    return reject(err);
-  }
-
-  log(`[SQL] Query concluida. ${rowCount} linhas.`);
-  resolve({ rows, rowCount, columns: columns.map(c => c.colName) });
-});
+        log(`[SQL] Query concluida. ${rowCount} linhas reportadas, ${rows.length} linhas coletadas.`);
+        return finishOk({
+          rows,
+          rowCount,
+          columns: columns.map((c) => c.colName)
+        });
+      });
 
       request.on("columnMetadata", (cols) => {
         columns = cols;
@@ -422,10 +483,14 @@ connection.on("errorMessage", (msg) => {
 
       request.on("row", (cols) => {
         const row = {};
-        cols.forEach(col => {
+        cols.forEach((col) => {
           row[col.metadata.colName] = col.value;
         });
         rows.push(row);
+      });
+
+      request.on("error", (requestErr) => {
+        finishError(requestErr, "do request");
       });
 
       connection.execSql(request);
@@ -435,22 +500,40 @@ connection.on("errorMessage", (msg) => {
   });
 }
 
-// --------------------------------------------------------------------------
-// Listar endpoints sql
-// --------------------------------------------------------------------------
+async function testSqlTcpConnection(sqlEndpoint) {
+  const server = normalizeSqlEndpoint(sqlEndpoint);
+
+  return new Promise((resolve) => {
+    const startedAt = Date.now();
+    const socket = net.createConnection({ host: server, port: 1433, timeout: 10000 });
+
+    socket.on("connect", () => {
+      const elapsedMs = Date.now() - startedAt;
+      socket.destroy();
+      resolve({ ok: true, server, port: 1433, elapsedMs });
+    });
+
+    socket.on("timeout", () => {
+      socket.destroy();
+      resolve({ ok: false, server, port: 1433, error: "TCP timeout" });
+    });
+
+    socket.on("error", (err) => {
+      resolve({ ok: false, server, port: 1433, error: err.message, code: err.code ?? null });
+    });
+  });
+}
 
 async function listLakehouseSqlEndpoints(workspaceNameOrId) {
   const workspaceId = await resolveWorkspaceId(workspaceNameOrId);
   const token = await getAzureToken(FABRIC_RESOURCE);
-  const data = await getJson(
-    `${FABRIC_BASE}/workspaces/${workspaceId}/lakehouses`,
-    token
-  );
+  const data = await getJson(`${FABRIC_BASE}/workspaces/${workspaceId}/lakehouses`, token);
   const items = Array.isArray(data.value) ? data.value : [];
+
   return {
     workspaceId,
     total: items.length,
-    lakehouses: items.map(lh => ({
+    lakehouses: items.map((lh) => ({
       id: lh.id,
       displayName: lh.displayName,
       sql_endpoint: lh.properties?.sqlEndpointProperties?.connectionString ?? null,
@@ -460,66 +543,65 @@ async function listLakehouseSqlEndpoints(workspaceNameOrId) {
   };
 }
 
-
 // ---------------------------------------------------------------------------
-// Tool definitions (shared between stdio and HTTP modes)
+// Tool definitions
 // ---------------------------------------------------------------------------
 
 const TOOL_DEFINITIONS = [
   {
     name: "list_fabric_workspaces",
-    description: "Lista todos os workspaces do Microsoft Fabric acessíveis via Fabric REST API.",
+    description: "Lista todos os workspaces do Microsoft Fabric acessiveis via Fabric REST API.",
     inputSchema: { type: "object", properties: {} }
   },
   {
     name: "list_powerbi_workspaces",
-    description: "Lista todos os workspaces do Power BI acessíveis via Power BI REST API.",
+    description: "Lista todos os workspaces do Power BI acessiveis via Power BI REST API.",
     inputSchema: { type: "object", properties: {} }
   },
   {
     name: "compare_fabric_and_powerbi_workspaces",
-    description: "Lista workspaces do Fabric e do Power BI e mostra diferenças entre as duas APIs.",
+    description: "Lista workspaces do Fabric e do Power BI e mostra diferencas entre as duas APIs.",
     inputSchema: { type: "object", properties: {} }
   },
   {
     name: "list_datasets",
-    description: "Lista os datasets (modelos semânticos) de um workspace do Power BI.",
+    description: "Lista os datasets/modelos semanticos de um workspace do Power BI.",
     inputSchema: {
       type: "object",
       properties: {
-        workspace: { type: "string", description: "Nome OU id (GUID) do workspace." }
+        workspace: { type: "string", description: "Nome ou id do workspace." }
       },
       required: ["workspace"]
     }
   },
   {
     name: "get_dataset",
-    description: "Retorna os metadados completos de um dataset específico.",
+    description: "Retorna metadados completos de um dataset especifico.",
     inputSchema: {
       type: "object",
       properties: {
         workspace: { type: "string" },
-        dataset: { type: "string", description: "Nome OU id do dataset." }
+        dataset: { type: "string", description: "Nome ou id do dataset." }
       },
       required: ["workspace", "dataset"]
     }
   },
   {
     name: "get_dataset_refresh_history",
-    description: "Retorna o histórico de atualizações de um dataset (mais recente primeiro).",
+    description: "Retorna o historico de atualizacoes de um dataset.",
     inputSchema: {
       type: "object",
       properties: {
         workspace: { type: "string" },
         dataset: { type: "string" },
-        top: { type: "integer", description: "Número máximo de entradas." }
+        top: { type: "integer" }
       },
       required: ["workspace", "dataset"]
     }
   },
   {
     name: "get_refresh_execution_details",
-    description: "Detalhes de execução de um refresh específico (enhanced refresh).",
+    description: "Detalhes de execucao de um refresh especifico.",
     inputSchema: {
       type: "object",
       properties: {
@@ -532,10 +614,13 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "get_dataset_refresh_schedule",
-    description: "Retorna o agendamento de atualização configurado para um dataset.",
+    description: "Retorna o agendamento de atualizacao configurado para um dataset.",
     inputSchema: {
       type: "object",
-      properties: { workspace: { type: "string" }, dataset: { type: "string" } },
+      properties: {
+        workspace: { type: "string" },
+        dataset: { type: "string" }
+      },
       required: ["workspace", "dataset"]
     }
   },
@@ -544,13 +629,16 @@ const TOOL_DEFINITIONS = [
     description: "Lista as fontes de dados usadas por um dataset.",
     inputSchema: {
       type: "object",
-      properties: { workspace: { type: "string" }, dataset: { type: "string" } },
+      properties: {
+        workspace: { type: "string" },
+        dataset: { type: "string" }
+      },
       required: ["workspace", "dataset"]
     }
   },
   {
     name: "find_dataset_last_refresh",
-    description: "Atalho: resolve nomes → ids e retorna a última atualização e as 5 mais recentes.",
+    description: "Resolve nomes para ids e retorna a ultima atualizacao e as 5 mais recentes.",
     inputSchema: {
       type: "object",
       properties: {
@@ -562,7 +650,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "list_reports",
-    description: "Lista os relatórios de um workspace com o datasetId associado.",
+    description: "Lista os relatorios de um workspace com datasetId associado.",
     inputSchema: {
       type: "object",
       properties: { workspace: { type: "string" } },
@@ -589,7 +677,7 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "get_dataflow_datasources",
-    description: "Lista as fontes de dados de um dataflow específico.",
+    description: "Lista as fontes de dados de um dataflow especifico.",
     inputSchema: {
       type: "object",
       properties: {
@@ -601,50 +689,63 @@ const TOOL_DEFINITIONS = [
   },
   {
     name: "get_workspace_inventory",
-    description: "Inventário consolidado de um workspace: datasets, reports, dashboards e dataflows.",
+    description: "Inventario consolidado de um workspace: datasets, reports, dashboards e dataflows.",
     inputSchema: {
       type: "object",
       properties: { workspace: { type: "string" } },
       required: ["workspace"]
     }
   },
-
   {
     name: "execute_sql_query",
-    description: "Executa uma query T-SQL no SQL Endpoint de um Lakehouse ou Warehouse do Microsoft Fabric. Use para consultar tabelas Delta diretamente via SQL.",
+    description: "Executa uma query T-SQL no SQL Endpoint de um Lakehouse ou Warehouse do Microsoft Fabric.",
     inputSchema: {
       type: "object",
       properties: {
         sql_endpoint: {
           type: "string",
-          description: "FQDN do SQL Endpoint do Lakehouse/Warehouse. Ex: abc123xyz.datawarehouse.fabric.microsoft.com"
+          description: "FQDN do SQL Endpoint. Ex: abc.datawarehouse.fabric.microsoft.com"
         },
         database: {
           type: "string",
-          description: "Nome do Lakehouse ou Warehouse (database name)."
+          description: "Nome do Lakehouse ou Warehouse."
         },
         query: {
           type: "string",
-          description: "Query T-SQL a executar. Prefira SELECT. Queries SELECT são automaticamente limitadas por max_rows."
+          description: "Query T-SQL a executar. Prefira SELECT."
         },
         max_rows: {
           type: "integer",
-          description: "Limite de linhas retornadas para queries SELECT (default: 100, máx: 1000).",
+          description: "Limite de linhas retornadas para SELECT. Default 100, maximo 1000.",
           default: 100
         }
       },
       required: ["sql_endpoint", "database", "query"]
     }
-  } ,
+  },
+  {
+    name: "test_sql_tcp_connection",
+    description: "Testa conectividade TCP do container ate o SQL Endpoint na porta 1433.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        sql_endpoint: {
+          type: "string",
+          description: "FQDN do SQL Endpoint."
+        }
+      },
+      required: ["sql_endpoint"]
+    }
+  },
   {
     name: "list_lakehouse_sql_endpoints",
-    description: "Lista todos os Lakehouses de um workspace do Fabric e retorna o SQL Endpoint de cada um. Use antes de execute_sql_query para descobrir o endpoint correto automaticamente.",
+    description: "Lista Lakehouses de um workspace do Fabric e retorna o SQL Endpoint de cada um.",
     inputSchema: {
       type: "object",
       properties: {
         workspace: {
           type: "string",
-          description: "Nome OU id (GUID) do workspace do Fabric."
+          description: "Nome ou id do workspace."
         }
       },
       required: ["workspace"]
@@ -653,18 +754,28 @@ const TOOL_DEFINITIONS = [
 ];
 
 // ---------------------------------------------------------------------------
-// Tool dispatcher (shared)
+// Tool dispatcher
 // ---------------------------------------------------------------------------
 
 async function dispatchTool(toolName, args) {
   switch (toolName) {
     case "list_fabric_workspaces": {
       const workspaces = await listFabricWorkspaces();
-      return successResponse({ ok: true, total: workspaces.length, source: "Fabric REST API /v1/workspaces", workspaces });
+      return successResponse({
+        ok: true,
+        total: workspaces.length,
+        source: "Fabric REST API /v1/workspaces",
+        workspaces
+      });
     }
     case "list_powerbi_workspaces": {
       const workspaces = await listPowerBiWorkspaces();
-      return successResponse({ ok: true, total: workspaces.length, source: "Power BI REST API /v1.0/myorg/groups", workspaces });
+      return successResponse({
+        ok: true,
+        total: workspaces.length,
+        source: "Power BI REST API /v1.0/myorg/groups",
+        workspaces
+      });
     }
     case "compare_fabric_and_powerbi_workspaces": {
       const [fab, pbi] = await Promise.all([listFabricWorkspaces(), listPowerBiWorkspaces()]);
@@ -672,7 +783,8 @@ async function dispatchTool(toolName, args) {
       const pbiIds = new Set(pbi.map((w) => w.id));
       return successResponse({
         ok: true,
-        fabricTotal: fab.length, powerBiTotal: pbi.length,
+        fabricTotal: fab.length,
+        powerBiTotal: pbi.length,
         inBoth: pbi.filter((w) => fabIds.has(w.id)),
         onlyInFabric: fab.filter((w) => !pbiIds.has(w.id)),
         onlyInPowerBi: pbi.filter((w) => !fabIds.has(w.id))
@@ -697,12 +809,14 @@ async function dispatchTool(toolName, args) {
     case "get_refresh_execution_details": {
       const groupId = await resolveWorkspaceId(args.workspace);
       const datasetId = await resolveDatasetId(groupId, args.dataset);
-      return successResponse({ ok: true, groupId, datasetId, details: await getRefreshExecutionDetails(groupId, datasetId, args.refreshId) });
+      const details = await getRefreshExecutionDetails(groupId, datasetId, args.refreshId);
+      return successResponse({ ok: true, groupId, datasetId, details });
     }
     case "get_dataset_refresh_schedule": {
       const groupId = await resolveWorkspaceId(args.workspace);
       const datasetId = await resolveDatasetId(groupId, args.dataset);
-      return successResponse({ ok: true, groupId, datasetId, schedule: await getRefreshSchedule(groupId, datasetId) });
+      const schedule = await getRefreshSchedule(groupId, datasetId);
+      return successResponse({ ok: true, groupId, datasetId, schedule });
     }
     case "get_dataset_datasources": {
       const groupId = await resolveWorkspaceId(args.workspace);
@@ -731,18 +845,23 @@ async function dispatchTool(toolName, args) {
     case "get_dataflow_datasources": {
       const groupId = await resolveWorkspaceId(args.workspace);
       const datasources = await getDataflowDatasources(groupId, args.dataflowId);
-      return successResponse({ ok: true, groupId, dataflowId: args.dataflowId, total: datasources.length, datasources });
+      return successResponse({
+        ok: true,
+        groupId,
+        dataflowId: args.dataflowId,
+        total: datasources.length,
+        datasources
+      });
     }
     case "get_workspace_inventory": {
       return successResponse({ ok: true, ...(await getWorkspaceInventory(args.workspace)) });
     }
     case "execute_sql_query": {
-      const maxRows = Math.min(args.max_rows ?? 100, 1000);
       const result = await executeSqlQuery(
         args.sql_endpoint,
         args.database,
         args.query,
-        maxRows
+        args.max_rows ?? 100
       );
       return successResponse({
         ok: true,
@@ -752,6 +871,9 @@ async function dispatchTool(toolName, args) {
         columns: result.columns,
         rows: result.rows
       });
+    }
+    case "test_sql_tcp_connection": {
+      return successResponse(await testSqlTcpConnection(args.sql_endpoint));
     }
     case "list_lakehouse_sql_endpoints": {
       const result = await listLakehouseSqlEndpoints(args.workspace);
@@ -763,12 +885,12 @@ async function dispatchTool(toolName, args) {
 }
 
 // ---------------------------------------------------------------------------
-// Server factory (one instance per SSE connection)
+// Server factory
 // ---------------------------------------------------------------------------
 
 function createMcpServer() {
   const server = new Server(
-    { name: "fabric-powerbi-rest-mcp", version: "3.0.0" },
+    { name: "fabric-powerbi-rest-mcp", version: "3.1.0" },
     { capabilities: { tools: {} } }
   );
 
@@ -794,66 +916,60 @@ function createMcpServer() {
 // ---------------------------------------------------------------------------
 
 if (HTTP_MODE) {
-  // ── HTTP / SSE mode (Docker) ──────────────────────────────────────────────
   const app = express();
-  // NÃO usar express.json() global — ele consome o stream que o SSE precisa cru.
 
-    const authMiddleware = (req, res, next) => {
+  const authMiddleware = (req, res, next) => {
     const key = process.env.MCP_API_KEY || process.env.MCP_BEARER_TOKEN;
 
     if (!key) {
-      log("[AUTH] MCP_API_KEY/MCP_BEARER_TOKEN não definido. Servidor aberto.");
+      log("[AUTH] MCP_API_KEY/MCP_BEARER_TOKEN nao definido. Servidor aberto.");
       return next();
     }
 
     const authorization = req.headers.authorization || "";
     const apiKey = req.headers["x-api-key"] || "";
-
-    const valid =
-      authorization === `Bearer ${key}` ||
-      apiKey === key;
+    const valid = authorization === `Bearer ${key}` || apiKey === key;
 
     if (!valid) {
       log(
-        `[AUTH] Rejeitado: ${req.ip} → ${req.path}. Header Authorization: ${
+        `[AUTH] Rejeitado: ${req.ip} -> ${req.path}. Header Authorization: ${
           authorization ? "presente" : "ausente"
         }, x-api-key: ${apiKey ? "presente" : "ausente"}`
       );
 
       return res.status(401).json({ error: "Unauthorized" });
     }
-  next();
-};
+
+    return next();
+  };
 
   const sessions = new Map();
 
   app.get("/sse", authMiddleware, async (req, res) => {
-    log(`[SSE] Nova sessão de ${req.ip}`);
+    log(`[SSE] Nova sessao de ${req.ip}`);
     const transport = new SSEServerTransport("/message", res);
     const mcpServer = createMcpServer();
     sessions.set(transport.sessionId, { transport, mcpServer });
+
     res.on("close", () => {
       sessions.delete(transport.sessionId);
-      log(`[SSE] Sessão encerrada: ${transport.sessionId}`);
+      log(`[SSE] Sessao encerrada: ${transport.sessionId}`);
     });
+
     await mcpServer.connect(transport);
   });
 
-  // POST sem express.json() — handlePostMessage lê o stream cru ele mesmo
   app.post("/message", authMiddleware, async (req, res) => {
     const session = sessions.get(req.query.sessionId);
     if (!session) return res.status(404).json({ error: "Session not found" });
-    await session.transport.handlePostMessage(req, res);
+    return session.transport.handlePostMessage(req, res);
   });
 
-  // health usa json manual, não precisa de body parser
   app.get("/health", (req, res) =>
-    res.json({ ok: true, version: "3.0.0", sessions: sessions.size })
+    res.json({ ok: true, version: "3.1.0", sessions: sessions.size })
   );
 
-    // ── Streamable HTTP mode para Copilot Studio ─────────────────────────────
   const streamableSessions = new Map();
-
   const jsonParser = express.json({ limit: "10mb" });
 
   app.post("/mcp", authMiddleware, jsonParser, async (req, res) => {
@@ -892,14 +1008,12 @@ if (HTTP_MODE) {
         });
       }
 
-      await transport.handleRequest(req, res, req.body);
+      return transport.handleRequest(req, res, req.body);
     } catch (error) {
       log(`[MCP] POST /mcp error: ${error.stack || error.message}`);
 
       if (!res.headersSent) {
-        res.status(500).json({
-          error: error.message
-        });
+        return res.status(500).json({ error: error.message });
       }
     }
   });
@@ -909,20 +1023,16 @@ if (HTTP_MODE) {
       const sessionId = req.headers["mcp-session-id"];
 
       if (!sessionId || !streamableSessions.has(sessionId)) {
-        return res.status(400).json({
-          error: "Invalid or missing MCP session ID"
-        });
+        return res.status(400).json({ error: "Invalid or missing MCP session ID" });
       }
 
       const transport = streamableSessions.get(sessionId);
-      await transport.handleRequest(req, res);
+      return transport.handleRequest(req, res);
     } catch (error) {
       log(`[MCP] Session request error: ${error.stack || error.message}`);
 
       if (!res.headersSent) {
-        res.status(500).json({
-          error: error.message
-        });
+        return res.status(500).json({ error: error.message });
       }
     }
   }
@@ -934,16 +1044,15 @@ if (HTTP_MODE) {
     log(`[HTTP] MCP server escutando na porta ${PORT}`);
     log(`[HTTP] SSE endpoint: http://0.0.0.0:${PORT}/sse`);
     log(
-  `[HTTP] Auth: ${
-    process.env.MCP_API_KEY || process.env.MCP_BEARER_TOKEN
-      ? "Bearer token ativo"
-      : "aberto (dev)"
-  }`
-);
+      `[HTTP] Auth: ${
+        process.env.MCP_API_KEY || process.env.MCP_BEARER_TOKEN
+          ? "Bearer token ativo"
+          : "aberto (dev)"
+      }`
+    );
   });
 } else {
-  // ── Stdio mode (Claude Desktop local) ────────────────────────────────────
-  log("Iniciando MCP stdio server (v3.0.0)...");
+  log("Iniciando MCP stdio server (v3.1.0)...");
   const transport = new StdioServerTransport();
   const mcpServer = createMcpServer();
   await mcpServer.connect(transport);
