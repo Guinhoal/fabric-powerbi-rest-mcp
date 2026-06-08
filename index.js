@@ -29,7 +29,7 @@ const PORT = parseInt(process.env.PORT ?? "8000", 10);
 
 const POWERBI_RESOURCE = "https://analysis.windows.net/powerbi/api";
 const FABRIC_RESOURCE = "https://api.fabric.microsoft.com";
-const SQL_RESOURCE = "https://database.windows.net";
+const SQL_RESOURCE = "https://database.windows.net/";
 const PBI_BASE = "https://api.powerbi.com/v1.0/myorg";
 const FABRIC_BASE = "https://api.fabric.microsoft.com/v1";
 
@@ -396,9 +396,9 @@ connection.on("errorMessage", (msg) => {
 
     connection.on("connect", (err) => {
       if (err) {
-        log(`[SQL] Erro de conexão: ${err.message}`);
-        return reject(err);
-      }
+  log(`[SQL] Erro de conexão: ${err.message}`);
+  return fail(err);
+}
 
       log(`[SQL] Conectado. Executando query...`);
       const request = new TdsRequest(safeQuery, (err, rowCount) => {
