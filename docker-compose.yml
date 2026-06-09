@@ -13,6 +13,7 @@ services:
       AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET}
       MCP_API_KEY: ${MCP_API_KEY}
       MCP_LOG_FILE: /var/log/mcp/debug.log
+      MCP_SQL_DEBUG: "1"
     volumes:
       - fabric-mcp-logs:/var/log/mcp
     healthcheck:
