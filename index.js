@@ -415,7 +415,16 @@ async function executeSqlQuery(sqlEndpoint, database, query, maxRows = 100) {
         trustServerCertificate: false,
         connectTimeout: 30000,
         requestTimeout: 60000,
-        rowCollectionOnDone: false
+        rowCollectionOnDone: false,
+        debug:
+          process.env.MCP_SQL_DEBUG === "1"
+            ? {
+                packet: true,
+                data: false,
+                payload: false,
+                token: true
+              }
+            : undefined
       }
     };
 
