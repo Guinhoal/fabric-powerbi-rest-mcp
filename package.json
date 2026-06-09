@@ -11,6 +11,6 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "express": "^4.19.0",
-    "tedious": "^18.0.0"
+    "tedious": "19.2.1"
   }
 }
